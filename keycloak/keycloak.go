@@ -21,10 +21,8 @@ func NewClient(hostname string) *keycloak {
 	}
 }
 
-func (k *keycloak) GetUserInfo(ctx context.Context, accessToken string, realm string) (User, error) {
-	var result User
-
-	userInfoUrl := strings.Join([]string{k.basePath, "auth", "realms", realm, "userinfo"}, "/")
+func (k *keycloak) GetUserInfo(ctx context.Context, accessToken string, realm string) (*User, error) {
+	userInfoUrl := strings.Join([]string{k.basePath, "auth", "realms", realm, "protocol", "openid-connect", "userinfo"}, "/")
 
 	resp, err := k.restyClient.R().
 		SetContext(ctx).
@@ -32,23 +30,40 @@ func (k *keycloak) GetUserInfo(ctx context.Context, accessToken string, realm st
 		SetHeader("Content-Type", "application/json").
 		Get(userInfoUrl)
 	if err != nil {
-		return result, err
+		return nil, APIError{
+			Code:    resp.StatusCode(),
+			Message: err.Error(),
+		}
 	}
-
 	defer resp.RawBody().Close()
 
-	err = json.Unmarshal(resp.Body(), &result)
-	if err != nil {
-		return result, err
+	if resp.Body() == nil {
+		return nil, APIError{
+			Message: "empty response",
+		}
 	}
 
-	return result, err
+	if resp.IsError() {
+		return nil, APIError{
+			Code:    resp.StatusCode(),
+			Message: resp.String(),
+		}
+	}
+
+	var result User
+	err = json.Unmarshal(resp.Body(), &result)
+	if err != nil {
+		return nil, err
+	}
+
+	return &result, err
 }
 
-func GetAllUserRoles(accessToken string) (tokenRoles TokenRoles, err error) {
+func GetAllUserRoles(accessToken string) (TokenRoles, error) {
 	var hmacSampleSecret []byte
+	var tokenRoles TokenRoles
 
-	token, err := jwt.Parse(accessToken, func(token *jwt.Token) (interface{}, error) {
+	token, _ := jwt.Parse(accessToken, func(token *jwt.Token) (interface{}, error) {
 		// Don't forget to validate the alg is what you expect:
 		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
@@ -58,47 +73,50 @@ func GetAllUserRoles(accessToken string) (tokenRoles TokenRoles, err error) {
 		return hmacSampleSecret, nil
 	})
 
-	if !token.Valid {
-		err = fmt.Errorf("invalid token")
-		return
+	// не обрабатываем err, потому err=invalid token, т.к. у нас нет ключа, чтобы его провалидировать
+	if token == nil {
+		return tokenRoles, fmt.Errorf("invalid token")
 	}
 
-	if claims, ok := token.Claims.(jwt.MapClaims); ok {
-		var realmRoleList Roles
-		if realmAccess, ok := claims["realm_access"]; ok {
-			switch realmAccess.(type) {
-			case map[string]interface{}:
-				realmRoleList = getRolesFromMap(realmAccess.(map[string]interface{}))
-			}
-		}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return tokenRoles, fmt.Errorf("invalid token")
+	}
 
-		var resourceRoleList ResourceRolesList
-		if resourceAccess, ok := claims["resource_access"]; ok {
-			switch resourceAccess.(type) {
-			case map[string]interface{}:
-				for resourceName, accessList := range resourceAccess.(map[string]interface{}) {
-					switch accessList.(type) {
-					case map[string]interface{}:
-						roles := getRolesFromMap(accessList.(map[string]interface{}))
-						resourceRole := ResourceRoles{
-							resource: resourceName,
-							roles:    roles,
-						}
-						resourceRoleList = append(resourceRoleList, resourceRole)
+	realmRoleList := make(Roles)
+	if realmAccess, ok := claims["realm_access"]; ok {
+		switch realmAccess.(type) {
+		case map[string]interface{}:
+			realmRoleList = getRolesFromMap(realmAccess.(map[string]interface{}))
+		}
+	}
+
+	var resourceRoleList ResourceRolesList
+	if resourceAccess, ok := claims["resource_access"]; ok {
+		switch resourceAccess.(type) {
+		case map[string]interface{}:
+			for resourceName, accessList := range resourceAccess.(map[string]interface{}) {
+				switch accessList.(type) {
+				case map[string]interface{}:
+					roles := getRolesFromMap(accessList.(map[string]interface{}))
+					resourceRole := ResourceRoles{
+						resource: resourceName,
+						roles:    roles,
 					}
+					resourceRoleList = append(resourceRoleList, &resourceRole)
 				}
 			}
 		}
-
-		tokenRoles.RealmRoles = realmRoleList
-		tokenRoles.ResourceRoles = resourceRoleList
 	}
 
-	return
+	tokenRoles.RealmRoles = realmRoleList
+	tokenRoles.ResourceRoles = resourceRoleList
+
+	return tokenRoles, nil
 }
 
 func getRolesFromMap(accessMap map[string]interface{}) Roles {
-	var roleList Roles
+	roleList := make(Roles)
 	roles, ok := accessMap["roles"]
 	if ok {
 		switch roles.(type) {

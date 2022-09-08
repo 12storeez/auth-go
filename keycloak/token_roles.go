@@ -10,6 +10,6 @@ type ResourceRoles struct {
 	roles    Roles
 }
 
-type ResourceRolesList []ResourceRoles
+type ResourceRolesList []*ResourceRoles
 
 type Roles map[string]struct{}
