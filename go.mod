@@ -1,4 +1,4 @@
-module auth-go
+module github.com/12storeez/auth-go
 
 go 1.19
 

@@ -1,9 +1,9 @@
 package main
 
 import (
-	"auth-go/keycloak"
 	"context"
 	"fmt"
+	"github.com/12storeez/auth-go/keycloak"
 )
 
 func main() {
